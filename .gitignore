@@ -1,0 +1,61 @@
+# Python 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+
+# Python 缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 测试和覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# 类型检查
+.mypy_cache/
+.dmypy.json
+.dmypy/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 环境配置（包含敏感信息）
+.env
+.env.local
+.env.*.local
+
+# 日志文件
+*.log
+logs/
+
+# 数据目录（用户本地数据）
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 依赖锁定文件（可选提交）
+# requirements.lock.txt
+
+# 构建产物
+build/
+dist/
+*.egg-info/
+.eggs/

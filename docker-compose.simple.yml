@@ -1,0 +1,46 @@
+# Docker Compose - 简单版本（个人/小团队）
+# 使用: docker-compose -f docker-compose.simple.yml up -d
+
+version: '3.8'
+
+services:
+  # GitHub Agent 主服务
+  agent:
+    build: .
+    container_name: github-agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # GitHub 认证（从 .env 文件读取）
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      
+      # 使用 Redis 作为队列
+      - GITHUB_AGENT_QUEUE__REDIS_URL=redis://redis:6379/0
+      
+      # LLM 配置
+      - GITHUB_AGENT_LLM__OLLAMA_HOST=http://host.docker.internal:11434
+      
+      # 日志
+      - LOG_LEVEL=INFO
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    volumes:
+      - ./data:/app/data
+    # 如果 Ollama 在宿主机运行，使用 host 网络模式
+    # network_mode: host
+
+  # Redis 队列（可选，也可以省略使用内存队列）
+  redis:
+    image: redis:7-alpine
+    container_name: github-agent-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    # 不暴露端口到宿主机，仅供内部使用
+
+volumes:
+  redis-data:

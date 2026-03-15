@@ -1,0 +1,49 @@
+# Core
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+structlog>=23.0.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Async
+aiohttp>=3.9.0
+aiofiles>=23.0.0
+
+# Database & Cache
+redis>=5.0.0
+rq>=1.15.0
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
+
+# Vector DB
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+
+# GitHub API
+PyGithub>=2.1.0
+PyJWT>=2.8.0
+cryptography>=41.0.0  # For JWT signing
+
+# HTTP Client
+httpx>=0.25.0
+
+# Data Processing
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Utils
+tenacity>=8.2.0  # Retry
+python-multipart>=0.0.6  # Form parsing
+jinja2>=3.1.0  # Templates
+
+# Development (optional)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+mypy>=1.7.0
+black>=23.0.0
+ruff>=0.1.0
