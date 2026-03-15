@@ -4,6 +4,10 @@ GitHub Agent V3 - 主入口
 启动 Webhook 服务器和 Worker 池
 """
 
+# 首先加载 .env 文件，确保环境变量在导入其他模块前已设置
+from dotenv import load_dotenv
+load_dotenv('.env')
+
 import asyncio
 import signal
 import sys
@@ -67,14 +71,14 @@ class GitHubAgent:
         # 启动 Webhook 服务器
         self.webhook_task = asyncio.create_task(
             start_server(
-                host="0.0.0.0",
-                port=8000
+                host=self.config.webhook.host,
+                port=self.config.webhook.port
             )
         )
         
         logger.info("agent.started",
                    workers=self.config.queue.workers,
-                   webhook_port=8000)
+                   webhook_port=self.config.webhook.port)
         
         # 等待关闭信号
         await self._shutdown_event.wait()
@@ -83,17 +87,19 @@ class GitHubAgent:
         """停止所有服务"""
         logger.info("agent.stopping")
         
-        # 停止 Worker 池
-        if self.worker_pool:
-            await self.worker_pool.stop()
-        
-        # 取消 Webhook 任务
-        if self.webhook_task:
+        # 取消 Webhook 任务（Uvicorn 服务器）
+        if self.webhook_task and not self.webhook_task.done():
             self.webhook_task.cancel()
             try:
-                await self.webhook_task
+                await asyncio.wait_for(self.webhook_task, timeout=6)
+            except asyncio.TimeoutError:
+                logger.warning("agent.stop_timeout", component="webhook")
             except asyncio.CancelledError:
                 pass
+        
+        # 停止 Worker 池
+        if self.worker_pool:
+            await asyncio.wait_for(self.worker_pool.stop(), timeout=10)
         
         logger.info("agent.stopped")
     
@@ -104,12 +110,22 @@ class GitHubAgent:
 
 async def main():
     """主入口"""
-    # 设置日志（简化版，使用临时目录）
-    from pathlib import Path
-    import tempfile
-    logs_dir = Path(tempfile.gettempdir()) / "github-agent-logs"
-    logs_dir.mkdir(exist_ok=True)
-    setup_logging(logs_dir)
+    # 设置日志 - 使用配置的数据目录和日志级别
+    from core.config import get_config
+    
+    # 先加载配置，确保环境变量被读取
+    config = get_config()
+    
+    # 使用配置中的数据目录
+    logs_dir = config.storage.datadir / 'logs'
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 从配置读取日志设置
+    log_level = config.logging.level if hasattr(config, 'logging') else 'INFO'
+    json_file = getattr(config.logging, 'json_file', True)
+    text_file = getattr(config.logging, 'text_file', True)
+    
+    setup_logging(logs_dir, level=log_level, json_file=json_file, text_file=text_file)
     
     agent = GitHubAgent()
     

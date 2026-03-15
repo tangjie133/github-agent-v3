@@ -37,7 +37,7 @@ class IssueWorker:
                  queue_manager: Optional[QueueManager] = None,
                  processor: Optional[Callable] = None):
         self.worker_id = worker_id
-        self.queue_manager = queue_manager or get_queue_manager()
+        self.queue_manager = queue_manager  # 可能在 start() 中初始化
         self.processor = processor  # Issue 处理函数
         self._running = False
         self._current_entry: Optional[QueueEntry] = None
@@ -48,10 +48,18 @@ class IssueWorker:
         consecutive_errors = 0
         max_backoff = 60  # 最大退避时间（秒）
         
-        logger.info("worker.started", worker_id=self.worker_id)
+        # 如果未提供 queue_manager，异步获取
+        if self.queue_manager is None:
+            self.queue_manager = await get_queue_manager()
+        
+        logger.info("worker.started", 
+                   worker_id=self.worker_id,
+                   queue_manager_id=id(self.queue_manager),
+                   has_processor=bool(self.processor))
         
         # 确保队列连接
         await self.queue_manager.connect()
+        logger.info("worker.queue_connected", worker_id=self.worker_id)
         
         while self._running:
             try:
@@ -60,6 +68,7 @@ class IssueWorker:
                 
                 if entry is None:
                     # 队列为空，等待
+                    logger.debug("worker.queue_empty", worker_id=self.worker_id)
                     await asyncio.sleep(1)
                     consecutive_errors = 0  # 重置错误计数
                     continue
@@ -206,9 +215,15 @@ class WorkerPool:
         """启动所有 Worker"""
         logger.info("worker_pool.starting", num_workers=self.num_workers)
         
+        # 获取共享的 queue_manager 实例
+        queue_manager = await get_queue_manager()
+        logger.info("worker_pool.queue_manager_ready", 
+                   queue_manager_id=id(queue_manager))
+        
         for i in range(self.num_workers):
             worker = IssueWorker(
                 worker_id=f"worker-{i+1}",
+                queue_manager=queue_manager,  # 共享实例
                 processor=self.processor
             )
             self.workers.append(worker)

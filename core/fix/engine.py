@@ -15,7 +15,7 @@ from pathlib import Path
 
 from core.logging import get_logger, traced
 from core.config import get_config
-from core.llm import get_llm_manager
+from core.llm.manager import get_llm_manager
 from core.fix.models import (
     FixPlan, FixResult, FixStatus, FilePatch, FileLocation,
     ChangeType, ValidationResult

@@ -67,8 +67,24 @@ class WebhookPayload:
 
 def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
     """验证 GitHub Webhook 签名"""
-    if not signature or not secret:
+    # 开发模式：跳过验证（设置 WEBHOOK_SKIP_VERIFY=1 ）
+    if os.getenv('WEBHOOK_SKIP_VERIFY') == '1':
+        logger.warning("webhook.signature_skipped", mode="development")
+        return True
+    
+    if not signature:
+        logger.warning("webhook.signature_missing")
         return False
+    
+    if not secret:
+        logger.warning("webhook.secret_not_configured")
+        return False
+    
+    # 调试：记录签名前几个字符（不记录完整签名）
+    logger.debug("webhook.signature_debug",
+                signature_prefix=signature[:20] if signature else "none",
+                secret_length=len(secret),
+                payload_length=len(payload))
     
     # GitHub 签名格式: sha256=<hex>
     expected = hmac.new(
@@ -77,7 +93,15 @@ def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
         hashlib.sha256
     ).hexdigest()
     
-    return hmac.compare_digest(f"sha256={expected}", signature)
+    expected_full = f"sha256={expected}"
+    is_valid = hmac.compare_digest(expected_full, signature)
+    
+    if not is_valid:
+        logger.warning("webhook.signature_mismatch",
+                      expected_prefix=expected_full[:20],
+                      received_prefix=signature[:20])
+    
+    return is_valid
 
 
 def check_rate_limit(client_ip: str, max_requests: int = 100, 
@@ -116,21 +140,30 @@ def is_bot(payload: Dict[str, Any]) -> bool:
 
 def should_process_issue(payload: WebhookPayload) -> bool:
     """
-    判断是否应该处理此 Issue
+    判断是否应该自动处理此 Issue
     
-    规则：
-    - 只处理 'opened' 和 'edited' 动作
-    - 忽略 Bot 创建的 Issue
+    规则（方案 B - @agent 触发模式）：
+    - 不自动处理 Issue 创建/编辑
+    - 只处理 Bot 创建的 Issue（如果需要）
+    - 用户需要通过 @agent 评论来触发
+    
+    如需改为自动模式，修改配置 processing.confirm_mode = auto
     """
-    if payload.action not in ["opened", "edited"]:
-        return False
+    config = get_config()
     
-    if is_bot(payload.payload):
-        logger.info("webhook.ignore_bot_issue",
-                   issue=payload.issue.get("number"))
-        return False
+    # 如果是 AUTO 模式，自动处理
+    if config.processing.confirm_mode == "auto":
+        if payload.action not in ["opened", "edited"]:
+            return False
+        if is_bot(payload.payload):
+            logger.info("webhook.ignore_bot_issue",
+                       issue=payload.issue.get("number"))
+            return False
+        return True
     
-    return True
+    # SMART/MANUAL 模式（@agent 触发）
+    # Issue 创建时不自动处理，等待 @agent 评论触发
+    return False
 
 
 def should_process_comment(payload: WebhookPayload) -> bool:
@@ -153,6 +186,7 @@ def should_process_comment(payload: WebhookPayload) -> bool:
 
 
 @app.post("/webhook")
+@app.post("/webhook/github")
 async def github_webhook(
     request: Request,
     x_hub_signature_256: Optional[str] = Header(None),
@@ -173,12 +207,14 @@ async def github_webhook(
     # 读取 payload
     body = await request.body()
     
-    # 签名验证
-    if not verify_signature(body, x_hub_signature_256, 
-                           config.github.webhook_secret or ""):
+    # 签名验证 - 优先使用环境变量 GITHUB_WEBHOOK_SECRET，其次使用配置
+    webhook_secret = os.getenv("GITHUB_WEBHOOK_SECRET") or config.github.webhook_secret or ""
+    
+    if not verify_signature(body, x_hub_signature_256, webhook_secret):
         logger.error("webhook.invalid_signature",
                     client_ip=client_ip,
-                    event=x_github_event)
+                    github_event=x_github_event,
+                    secret_configured=bool(webhook_secret))
         raise HTTPException(401, "Invalid signature")
     
     # 解析 payload
@@ -195,26 +231,54 @@ async def github_webhook(
     )
     
     logger.info("webhook.received",
-               event=x_github_event,
+               github_event=x_github_event,
                action=payload.action,
-               delivery=x_github_delivery)
+               delivery=x_github_delivery,
+               is_issue=payload.is_issue,
+               is_comment=payload.is_issue_comment,
+               repo=payload.repository.get("full_name"))
     
     # 路由处理
     try:
-        if payload.is_issue and should_process_issue(payload):
-            await handle_issue_event(payload)
+        if payload.is_issue:
+            config = get_config()
+            should_process = should_process_issue(payload)
+            
+            logger.debug("webhook.checking_issue",
+                        action=payload.action,
+                        confirm_mode=config.processing.confirm_mode,
+                        should_process=should_process)
+            
+            if should_process:
+                await handle_issue_event(payload)
+            else:
+                if config.processing.confirm_mode in ["manual", "smart"]:
+                    logger.info("webhook.issue_skipped_use_agent",
+                               action=payload.action,
+                               message="Use @agent comment to trigger")
+                else:
+                    logger.info("webhook.issue_ignored",
+                               action=payload.action,
+                               reason="filters_not_met")
         
-        elif payload.is_issue_comment and should_process_comment(payload):
-            await handle_comment_event(payload)
+        elif payload.is_issue_comment:
+            logger.debug("webhook.checking_comment",
+                        should_process=should_process_comment(payload))
+            if should_process_comment(payload):
+                await handle_comment_event(payload)
+            else:
+                logger.info("webhook.comment_ignored",
+                           reason="filters_not_met")
         
         else:
             logger.debug("webhook.ignored",
-                        event=x_github_event,
-                        action=payload.action)
+                        github_event=x_github_event,
+                        action=payload.action,
+                        reason="unsupported_event_type")
     
     except Exception as e:
         logger.error("webhook.handle_error",
-                    event=x_github_event,
+                    github_event=x_github_event,
                     error=str(e))
         # 返回 200 避免 GitHub 重试
     
@@ -270,7 +334,9 @@ async def handle_comment_event(payload: WebhookPayload):
     """
     处理 Issue 评论事件
     
-    检查是否是确认/拒绝指令，如果是则处理
+    支持：
+    1. @agent 触发修复
+    2. confirm/cancel 确认指令
     """
     repo = payload.repository
     issue = payload.issue
@@ -287,9 +353,25 @@ async def handle_comment_event(payload: WebhookPayload):
                owner=owner,
                repo=repo_name,
                issue=issue_number,
-               user=username)
+               user=username,
+               comment_preview=comment_body[:50] if comment_body else "")
     
-    # 检查是否是确认指令
+    # 1. 检查是否是 @agent 触发
+    if is_agent_mentioned(comment_body):
+        logger.info("webhook.agent_mentioned",
+                   owner=owner,
+                   repo=repo_name,
+                   issue=issue_number)
+        
+        # 触发 Issue 处理
+        await handle_agent_trigger(
+            owner, repo_name, issue_number,
+            issue.get("title", ""),
+            issue.get("body", "")
+        )
+        return
+    
+    # 2. 检查是否是确认指令
     processor = await get_issue_processor()
     
     result = await processor.handle_comment(
@@ -307,10 +389,139 @@ async def handle_comment_event(payload: WebhookPayload):
                    issue=issue_number,
                    status=result.value)
     else:
-        logger.debug("webhook.not_confirmation_comment",
+        logger.debug("webhook.not_command_comment",
                     owner=owner,
                     repo=repo_name,
                     issue=issue_number)
+
+
+def is_agent_mentioned(comment_body: str) -> bool:
+    """检查评论是否提到了 @agent"""
+    if not comment_body:
+        return False
+    
+    # 支持的触发词
+    triggers = [
+        "@agent",
+        "@github-agent",
+        "@bot",
+    ]
+    
+    comment_lower = comment_body.lower()
+    return any(trigger in comment_lower for trigger in triggers)
+
+
+async def handle_agent_trigger(owner: str, repo: str, issue_number: int,
+                               issue_title: str, issue_body: str):
+    """处理 @agent 触发"""
+    logger.info("webhook.agent_trigger_processing",
+               owner=owner,
+               repo=repo,
+               issue=issue_number)
+    
+    # 1. 意图识别 - 判断是否为纯问答
+    # 提取触发指令（去掉@agent）
+    instruction = issue_body.lower()
+    
+    # 定义纯问答关键词（不需要代码处理）
+    QNA_KEYWORDS = [
+        "你能干什么", "你会做什么", "你有什么功能", "功能介绍",
+        "你是谁", "你是什么", "介绍一下自己",
+        "帮助", "help", "如何使用", "怎么用"
+    ]
+    
+    # 定义代码修复关键词（需要入队处理）
+    CODE_KEYWORDS = [
+        "修复", "修改", "改成", "解决", "fix", "bug", "error",
+        "报错", "错误", "异常", "修改代码", "改一下"
+    ]
+    
+    # 判断意图
+    is_qna = any(kw in instruction for kw in QNA_KEYWORDS)
+    is_code = any(kw in instruction for kw in CODE_KEYWORDS)
+    
+    # 2. 纯问答直接回答，不入队
+    if is_qna and not is_code:
+        logger.info("webhook.direct_qna_response",
+                   owner=owner, repo=repo, issue=issue_number)
+        
+        try:
+            from core.github_api import get_github_client
+            github = get_github_client()
+            
+            # 直接回答，不发送"处理中"消息
+            answer = """👋 你好！我是 GitHub Agent，一个智能代码助手。
+
+**我能帮你：**
+1. 🐛 **修复 Bug** - 分析 Issue 中的错误并自动生成修复代码
+2. ✨ **代码修改** - 根据你的需求修改代码逻辑
+3. 📝 **代码审查** - 检查代码潜在问题
+4. 💡 **技术咨询** - 回答编程相关问题
+
+**使用方法：**
+- `@agent 修复这个问题` - 自动分析并修复
+- `@agent 把XX改成YY` - 按需求修改代码
+- `@agent 分析一下` - 代码审查
+
+需要我帮你处理什么代码问题吗？"""
+            
+            await github.create_issue_comment(owner, repo, issue_number, answer)
+            
+            logger.info("webhook.direct_qna_sent",
+                       owner=owner, repo=repo, issue=issue_number)
+            return  # 直接返回，不入队
+            
+        except Exception as e:
+            logger.error("webhook.direct_qna_failed",
+                        owner=owner, repo=repo, issue=issue_number,
+                        error=str(e))
+            return
+    
+    # 3. 代码相关问题 - 入队处理
+    try:
+        from core.github_api import get_github_client
+        github = get_github_client()
+        
+        # 发送处理中通知
+        await github.create_issue_comment(
+            owner, repo, issue_number,
+            "👋 收到！我正在分析这个问题，请稍候..."
+        )
+        logger.info("webhook.agent_trigger_ack_sent",
+                   owner=owner, repo=repo, issue=issue_number)
+    except Exception as e:
+        logger.warning("webhook.agent_trigger_ack_failed",
+                      owner=owner, repo=repo, issue=issue_number,
+                      error=str(e))
+    
+    try:
+        # 添加到处理队列
+        queue_mgr = await get_queue_manager()
+        
+        position = await queue_mgr.enqueue(
+            issue_id=f"{owner}/{repo}#{issue_number}",
+            repo=repo,
+            issue_number=issue_number,
+            event_type="agent_trigger",
+            priority=Priority.NORMAL.value,
+            owner=owner,
+            title=issue_title,
+            body=issue_body
+        )
+        
+        logger.info("webhook.agent_trigger_enqueued",
+                   owner=owner,
+                   repo=repo,
+                   issue=issue_number,
+                   queue_position=position.position)
+        
+    except Exception as e:
+        logger.error("webhook.agent_trigger_failed",
+                    owner=owner,
+                    repo=repo,
+                    issue=issue_number,
+                    error=str(e),
+                    exc_info=True)
 
 
 @app.get("/health")
@@ -328,9 +539,14 @@ async def start_server(host: str = "0.0.0.0", port: int = 8000):
         app,
         host=host,
         port=port,
-        log_level="info"
+        log_level="info",
+        timeout_graceful_shutdown=5  # 5秒优雅关闭超时
     )
     server = uvicorn.Server(config)
+    
+    # 覆盖默认信号处理，让主进程管理信号
+    server.install_signal_handlers = lambda: None
+    
     await server.serve()
 
 

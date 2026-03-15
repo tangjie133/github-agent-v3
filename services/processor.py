@@ -553,7 +553,7 @@ class IssueProcessor:
         confirm_mgr = get_confirmation_manager()
         
         return await confirm_mgr.handle_user_response(
-            owner, repo, issue_number, comment_body, username
+            repo, issue_number, comment_body, username
         )
 
 

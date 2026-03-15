@@ -189,7 +189,10 @@ class QueueManager:
                      repo: str, 
                      issue_number: int,
                      event_type: str = "issue_comment",
-                     priority: int = 0) -> QueuePosition:
+                     priority: int = 0,
+                     owner: str = "",
+                     title: str = "",
+                     body: str = "") -> QueuePosition:
         """
         将 Issue 加入队列
         
@@ -199,6 +202,9 @@ class QueueManager:
             issue_number: Issue 编号
             event_type: 事件类型
             priority: 优先级（0=普通，1=高，2=紧急）
+            owner: 仓库所有者
+            title: Issue 标题
+            body: Issue 内容
         
         Returns:
             QueuePosition: 排队位置信息
@@ -210,7 +216,10 @@ class QueueManager:
             event_type=event_type,
             priority=priority,
             status=QueueStatus.QUEUED,
-            created_at=utc_now_iso()
+            created_at=utc_now_iso(),
+            owner=owner,
+            title=title,
+            body=body
         )
         
         if self.is_available:
@@ -279,7 +288,8 @@ class QueueManager:
         logger.info("queue.enqueued_local",
                    issue_id=entry.issue_id,
                    repo=entry.repo,
-                   queue_size=len(self._local_queue))
+                   queue_size=len(self._local_queue),
+                   queue_manager_id=id(self))
         
         return QueuePosition(
             issue_id=entry.issue_id,
@@ -347,9 +357,10 @@ class QueueManager:
         
         self._local_processing[entry.issue_id] = entry
         
-        logger.debug("queue.dequeued_local", 
-                    issue_id=entry.issue_id,
-                    queue_size=len(self._local_queue))
+        logger.info("queue.dequeued_local", 
+                   issue_id=entry.issue_id,
+                   queue_size=len(self._local_queue),
+                   queue_manager_id=id(self))
         return entry
     
     async def complete(self, 

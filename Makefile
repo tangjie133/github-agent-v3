@@ -1,4 +1,4 @@
-.PHONY: help venv setup config config-show config-validate install lint format test type-check clean start dev diagnose check-venv
+.PHONY: help venv setup config install lint format test type-check clean start dev diagnose check-venv
 
 # Python 虚拟环境目录
 VENV_DIR ?= venv
@@ -10,9 +10,7 @@ help:
 	@echo ""
 	@echo "  make venv             创建 Python 虚拟环境"
 	@echo "  make setup            完整环境设置（创建 venv + 安装依赖）"
-	@echo "  make config           交互式配置向导（推荐）"
-	@echo "  make config-show      显示当前配置（隐藏敏感信息）"
-	@echo "  make config-validate  验证配置完整性"
+	@echo "  make config           交互式配置管理（菜单导航、按需修改）"
 	@echo "  make install          安装依赖（需在虚拟环境中）"
 	@echo "  make lint             代码检查 (ruff)"
 	@echo "  make format           代码格式化 (black)"
@@ -27,7 +25,7 @@ help:
 	@echo ""
 	@echo "快速开始:"
 	@echo "  1. make setup         # 设置环境"
-	@echo "  2. make config        # 配置参数"
+	@echo "  2. make config        # 配置参数（菜单式交互）"
 	@echo "  3. make dev           # 启动服务"
 
 # 检查虚拟环境是否激活（不强制，仅警告）
@@ -71,17 +69,9 @@ setup: venv
 	@echo "   2. 启动服务: make dev"
 	@echo ""
 
-# 交互式配置向导
+# 交互式配置向导（支持菜单导航、按需修改）
 config: check-venv
-	@python scripts/config_wizard.py wizard
-
-# 显示当前配置（隐藏敏感信息）
-config-show: check-venv
-	@python scripts/config_wizard.py show
-
-# 验证配置完整性
-config-validate: check-venv
-	@python scripts/config_wizard.py validate
+	@python scripts/config_wizard.py
 
 # 安装依赖（推荐在虚拟环境中运行）
 install: check-venv

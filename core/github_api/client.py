@@ -47,9 +47,9 @@ class GitHubAppAuth:
         self._installation_tokens: Dict[str, Dict] = {}  # repo -> {token, expires_at}
     
     def _generate_jwt(self) -> str:
-        """生成 JWT token"""
+        """生成 JWT token (PyJWT 2.x compatible)"""
         try:
-            from jwt import JWT, jwk_from_pem
+            import jwt
         except ImportError:
             logger.error("github_app.missing_jwt_library")
             raise RuntimeError("PyJWT library required for GitHub App auth")
@@ -61,10 +61,10 @@ class GitHubAppAuth:
             "iss": self.app_id
         }
         
-        signing_key = jwk_from_pem(self.private_key.encode())
-        jwt_instance = JWT()
-        token = jwt_instance.encode(payload, signing_key, alg='RS256')
+        # PyJWT 2.x API: 直接使用 jwt.encode() 传入私钥
+        token = jwt.encode(payload, self.private_key, algorithm='RS256')
         
+        # jwt.encode 返回 str (PyJWT 2.x)，无需解码
         return token
     
     async def _get_installation_token(self, 
@@ -179,18 +179,41 @@ class GitHubClient:
         token = os.getenv("GITHUB_TOKEN")
         app_id = os.getenv("GITHUB_APP_ID")
         private_key = os.getenv("GITHUB_APP_PRIVATE_KEY")
+        private_key_path = os.getenv("GITHUB_APP_PRIVATE_KEY_PATH")
         
-        # 如果从配置文件读取
+        # 如果环境变量有私钥路径，从文件读取
+        if private_key_path and not private_key:
+            if os.path.exists(private_key_path):
+                try:
+                    with open(private_key_path) as f:
+                        private_key = f.read()
+                except Exception as e:
+                    logger.error("github_api.failed_to_load_private_key",
+                                path=private_key_path,
+                                error=str(e))
+                    private_key = None
+            else:
+                logger.error("github_api.private_key_file_not_found",
+                            path=private_key_path)
+                private_key = None
+        
+        # 如果从配置文件读取（环境变量未设置时）
         if not token and not app_id:
             token = self.config.github.token
             app_id = self.config.github.app_id
-            private_key_path = self.config.github.private_key_path
             
-            if private_key_path and os.path.exists(private_key_path):
-                with open(private_key_path) as f:
-                    private_key = f.read()
-            else:
-                private_key = None
+            # 如果环境变量没有私钥，尝试从配置读取
+            if not private_key:
+                private_key_path = self.config.github.private_key_path
+                if private_key_path and os.path.exists(private_key_path):
+                    try:
+                        with open(private_key_path) as f:
+                            private_key = f.read()
+                    except Exception as e:
+                        logger.error("github_api.failed_to_load_private_key",
+                                    path=private_key_path,
+                                    error=str(e))
+                        private_key = None
         
         return GitHubCredentials(
             token=token,

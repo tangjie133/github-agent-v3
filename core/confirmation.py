@@ -28,6 +28,7 @@ class ConfirmMode(Enum):
     """确认模式"""
     AUTO = "auto"       # 自动确认
     MANUAL = "manual"   # 人工确认（默认）
+    SMART = "smart"     # 智能模式（根据置信度自动或人工）
 
 
 class ConfirmStatus(Enum):
@@ -125,12 +126,19 @@ class ConfirmationManager:
         Returns:
             确认记录
         """
-        # 如果是 auto 模式且置信度足够高，直接通过
-        if self.mode == ConfirmMode.AUTO and confidence >= self.auto_threshold:
+        # 如果是 auto 模式，或 smart 模式且置信度足够高，直接通过
+        should_auto_approve = (
+            self.mode == ConfirmMode.AUTO or
+            (self.mode == ConfirmMode.SMART and confidence >= self.auto_threshold)
+        )
+        
+        if should_auto_approve:
+            mode_str = "auto" if self.mode == ConfirmMode.AUTO else "smart"
             logger.info("confirmation.auto_approved",
                        repo=repo,
                        issue=issue_number,
-                       confidence=confidence)
+                       confidence=confidence,
+                       mode=mode_str)
             
             record = ConfirmationRecord(
                 issue_number=issue_number,
@@ -139,7 +147,7 @@ class ConfirmationManager:
                 status=ConfirmStatus.AUTO,
                 files_changed=files_changed,
                 resolved_at=utc_now(),
-                resolved_by="system(auto)"
+                resolved_by=f"system({mode_str})"
             )
             
             key = self._make_key(repo, issue_number)
@@ -335,8 +343,8 @@ class ConfirmationManager:
             return "en"
     
     def is_auto_mode(self) -> bool:
-        """是否为自动模式"""
-        return self.mode == ConfirmMode.AUTO
+        """是否为自动模式（包括 SMART 模式，因为 SMART 在高置信度时自动）"""
+        return self.mode in (ConfirmMode.AUTO, ConfirmMode.SMART)
     
     def get_stats(self) -> Dict[str, int]:
         """获取统计信息"""

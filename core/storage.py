@@ -351,8 +351,28 @@ _storage_instance: Optional[StorageManager] = None
 
 
 def get_storage(base_dir: Optional[Path] = None) -> StorageManager:
-    """获取 StorageManager 单例"""
+    """获取 StorageManager 单例
+    
+    优先顺序：
+    1. 传入的 base_dir 参数
+    2. 配置系统中的 storage.datadir
+    3. 环境变量 GITHUB_AGENT_DATADIR
+    4. 默认值 ~/github-agent-data
+    """
     global _storage_instance
-    if _storage_instance is None or base_dir is not None:
-        _storage_instance = StorageManager(base_dir)
+    
+    if base_dir is not None:
+        return StorageManager(base_dir)
+    
+    if _storage_instance is None:
+        # 从配置系统获取数据目录
+        try:
+            from core.config import get_config
+            config = get_config()
+            datadir = config.storage.datadir
+            _storage_instance = StorageManager(datadir)
+        except Exception:
+            # 配置系统未初始化，回退到环境变量/默认值
+            _storage_instance = StorageManager()
+    
     return _storage_instance

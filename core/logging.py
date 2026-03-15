@@ -273,7 +273,8 @@ class TextFormatter(logging.Formatter):
             extra_str = ' '.join(f"{k}={v}" for k, v in extra.items()) if extra else ''
             return f"[{timestamp}] {level:8} {event:40} {extra_str}"
         except json.JSONDecodeError:
-            return f"[{record.asctime}] {record.levelname:8} {record.getMessage()}"
+            timestamp = getattr(record, 'asctime', None) or datetime.datetime.fromtimestamp(record.created).strftime('%Y-%m-%dT%H:%M:%S')
+            return f"[{timestamp}] {record.levelname:8} {record.getMessage()}"
 
 
 class ColoredFormatter(TextFormatter):

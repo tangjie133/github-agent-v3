@@ -116,6 +116,19 @@ class GitHubConfig(BaseModel):
     webhook_secret: Optional[str] = None
     token: Optional[str] = None
     
+    @model_validator(mode='after')
+    def load_from_env(self):
+        """从环境变量加载 GitHub 配置（支持无前缀的变量名）"""
+        if not self.app_id:
+            self.app_id = os.getenv('GITHUB_APP_ID')
+        if not self.private_key_path:
+            self.private_key_path = os.getenv('GITHUB_APP_PRIVATE_KEY_PATH')
+        if not self.webhook_secret:
+            self.webhook_secret = os.getenv('GITHUB_WEBHOOK_SECRET')
+        if not self.token:
+            self.token = os.getenv('GITHUB_TOKEN')
+        return self
+    
     # 触发模式
     issue_trigger_mode: Literal["all", "smart", "none"] = "smart"
     comment_trigger_mode: Literal["all", "smart", "none"] = "smart"
@@ -172,6 +185,10 @@ class LoggingConfig(BaseModel):
     console_output: bool = True
     file_output: bool = True
     
+    # 文件日志开关
+    json_file: bool = True   # 输出 JSON 格式日志文件
+    text_file: bool = True   # 输出文本格式日志文件
+    
     # 调试模式
     debug: bool = False
     trace: bool = False
@@ -194,6 +211,17 @@ class KnowledgeBaseConfig(BaseModel):
         if not v.startswith(('http://', 'https://')):
             raise ValueError(f"URL must start with http:// or https://: {v}")
         return v
+
+
+class WebhookConfig(BaseModel):
+    """Webhook 服务器配置"""
+    host: str = "0.0.0.0"
+    port: int = Field(default=8000, ge=1024, le=65535)
+    
+    @property
+    def url(self) -> str:
+        """生成 Webhook URL"""
+        return f"http://{self.host}:{self.port}"
 
 
 # =============================================================================
@@ -219,12 +247,15 @@ class AgentConfig(BaseSettings):
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     knowledge_base: KnowledgeBaseConfig = Field(default_factory=KnowledgeBaseConfig)
+    webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     
     model_config = ConfigDict(
         env_prefix="GITHUB_AGENT_",
         env_nested_delimiter="__",
         case_sensitive=False,
-        extra='ignore'
+        extra='ignore',
+        env_file='.env',
+        env_file_encoding='utf-8'
     )
     
     def validate_all(self) -> List[str]:
@@ -402,7 +433,7 @@ def get_config(
     获取 ConfigManager 单例（向后兼容）
     
     Args:
-        storage_dir: 数据目录
+        storage_dir: 数据目录（覆盖配置中的值）
         reload: 是否强制重新加载
     
     Returns:
@@ -411,13 +442,12 @@ def get_config(
     global _config_instance
     
     if _config_instance is None or reload:
-        if storage_dir is None:
-            storage_dir = Path(os.getenv(
-                'GITHUB_AGENT_DATADIR',
-                Path.home() / 'github-agent-data'
-            ))
-        
-        _config_instance = ConfigLoader.load(datadir=storage_dir)
+        if storage_dir is not None:
+            # 使用指定的数据目录
+            _config_instance = ConfigLoader.load(datadir=storage_dir)
+        else:
+            # 从环境变量/配置文件加载（Pydantic Settings 自动处理 .env）
+            _config_instance = AgentConfig()
     
     return _config_instance
 
