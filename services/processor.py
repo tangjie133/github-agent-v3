@@ -83,7 +83,8 @@ class IssueProcessor:
                           issue_number: int,
                           issue_title: str,
                           issue_body: str,
-                          error_logs: str = "") -> Dict[str, Any]:
+                          error_logs: str = "",
+                          installation_id: Optional[int] = None) -> Dict[str, Any]:
         """
         处理 Issue 主入口
         
@@ -96,6 +97,10 @@ class IssueProcessor:
         6. 创建 PR
         7. 回复用户
         """
+        # 设置 GitHub App Installation ID
+        if installation_id:
+            self.github_client.set_installation_id(installation_id)
+        
         start_time = time.time()
         lang = get_i18n().detect_language(issue_body)
         

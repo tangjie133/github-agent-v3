@@ -7,17 +7,14 @@ GitHub API 客户端
 """
 
 import os
-import time
-import json
-import base64
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 
 import aiohttp
 
 from core.logging import get_logger, traced
 from core.config import get_config
+from core.github_api.auth import GitHubAuthManager
 
 logger = get_logger(__name__)
 
@@ -34,123 +31,6 @@ class GitHubCredentials:
     installation_id: Optional[int] = None
 
 
-class GitHubAppAuth:
-    """
-    GitHub App 认证管理
-    
-    处理 JWT 签名和安装令牌获取
-    """
-    
-    def __init__(self, app_id: str, private_key: str):
-        self.app_id = app_id
-        self.private_key = private_key
-        self._installation_tokens: Dict[str, Dict] = {}  # repo -> {token, expires_at}
-    
-    def _generate_jwt(self) -> str:
-        """生成 JWT token (PyJWT 2.x compatible)"""
-        try:
-            import jwt
-        except ImportError:
-            logger.error("github_app.missing_jwt_library")
-            raise RuntimeError("PyJWT library required for GitHub App auth")
-        
-        now = int(time.time())
-        payload = {
-            "iat": now - 60,  # 发行时间（提前 60 秒避免时钟漂移）
-            "exp": now + 600,  # 过期时间（10 分钟）
-            "iss": self.app_id
-        }
-        
-        # PyJWT 2.x API: 直接使用 jwt.encode() 传入私钥
-        token = jwt.encode(payload, self.private_key, algorithm='RS256')
-        
-        # jwt.encode 返回 str (PyJWT 2.x)，无需解码
-        return token
-    
-    async def _get_installation_token(self, 
-                                     owner: str, 
-                                     repo: str,
-                                     session: aiohttp.ClientSession) -> str:
-        """
-        获取安装令牌
-        
-        令牌缓存 50 分钟（实际有效期 1 小时）
-        """
-        cache_key = f"{owner}/{repo}"
-        
-        # 检查缓存
-        cached = self._installation_tokens.get(cache_key)
-        if cached:
-            expires_at = cached.get('expires_at', 0)
-            if time.time() < expires_at - 600:  # 提前 10 分钟刷新
-                return cached['token']
-        
-        # 获取新令牌
-        jwt_token = self._generate_jwt()
-        
-        # 获取安装 ID（如果未提供）
-        installation_id = await self._get_installation_id(
-            owner, repo, jwt_token, session
-        )
-        
-        url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
-        
-        async with session.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {jwt_token}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-        ) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            
-            token = data['token']
-            expires_at = data['expires_at']
-            
-            # 解析过期时间
-            expires_dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-            expires_timestamp = expires_dt.timestamp()
-            
-            # 缓存
-            self._installation_tokens[cache_key] = {
-                'token': token,
-                'expires_at': expires_timestamp
-            }
-            
-            return token
-    
-    async def _get_installation_id(self,
-                                   owner: str,
-                                   repo: str,
-                                   jwt_token: str,
-                                   session: aiohttp.ClientSession) -> int:
-        """获取仓库的安装 ID"""
-        url = f"https://api.github.com/repos/{owner}/{repo}/installation"
-        
-        async with session.get(
-            url,
-            headers={
-                "Authorization": f"Bearer {jwt_token}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-        ) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            return data['id']
-    
-    async def get_auth_headers(self,
-                               owner: str,
-                               repo: str,
-                               session: aiohttp.ClientSession) -> Dict[str, str]:
-        """获取认证头"""
-        token = await self._get_installation_token(owner, repo, session)
-        return {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-
-
 class GitHubClient:
     """
     GitHub API 客户端
@@ -164,14 +44,19 @@ class GitHubClient:
         self.config = get_config()
         self.credentials = credentials or self._load_credentials()
         self._session: Optional[aiohttp.ClientSession] = None
-        self._app_auth: Optional[GitHubAppAuth] = None
+        self._auth_manager: Optional[GitHubAuthManager] = None
+        self._installation_id: Optional[str] = None
         
-        # 初始化 GitHub App 认证
+        # 初始化 GitHub App 认证管理器
         if self.credentials.app_id and self.credentials.private_key:
-            self._app_auth = GitHubAppAuth(
-                self.credentials.app_id,
-                self.credentials.private_key
+            self._auth_manager = GitHubAuthManager(
+                app_id=self.credentials.app_id,
+                private_key=self.credentials.private_key
             )
+    
+    def set_installation_id(self, installation_id: Optional[int]):
+        """设置 GitHub App Installation ID（从 webhook 获取）"""
+        self._installation_id = str(installation_id) if installation_id else None
     
     def _load_credentials(self) -> GitHubCredentials:
         """从配置加载认证信息"""
@@ -227,11 +112,15 @@ class GitHubClient:
             self._session = aiohttp.ClientSession()
         return self._session
     
-    async def _get_auth_headers(self, owner: str, repo: str) -> Dict[str, str]:
+    async def _get_auth_headers(self, owner: str = "", repo: str = "") -> Dict[str, str]:
         """获取认证头"""
-        if self._app_auth:
-            session = await self._get_session()
-            return await self._app_auth.get_auth_headers(owner, repo, session)
+        if self._auth_manager and self._installation_id:
+            # GitHub App 模式 - 使用 webhook 中的 installation_id
+            token = self._auth_manager.get_installation_token(self._installation_id)
+            return {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.v3+json"
+            }
         
         if self.credentials.token:
             return {

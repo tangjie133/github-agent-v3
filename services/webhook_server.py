@@ -63,6 +63,14 @@ class WebhookPayload:
     @property
     def sender(self) -> Dict[str, Any]:
         return self.payload.get("sender", {})
+    
+    @property
+    def installation(self) -> Dict[str, Any]:
+        return self.payload.get("installation", {})
+    
+    @property
+    def installation_id(self) -> Optional[int]:
+        return self.installation.get("id")
 
 
 def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
@@ -318,7 +326,8 @@ async def handle_issue_event(payload: WebhookPayload):
         body=body,
         priority=Priority.NORMAL.value,
         event_type="issues",
-        status=QueueStatus.PENDING
+        status=QueueStatus.PENDING,
+        installation_id=payload.installation_id
     )
     
     await queue_mgr.enqueue(entry)
@@ -367,7 +376,8 @@ async def handle_comment_event(payload: WebhookPayload):
         await handle_agent_trigger(
             owner, repo_name, issue_number,
             issue.get("title", ""),
-            issue.get("body", "")
+            issue.get("body", ""),
+            payload.installation_id
         )
         return
     
@@ -412,7 +422,8 @@ def is_agent_mentioned(comment_body: str) -> bool:
 
 
 async def handle_agent_trigger(owner: str, repo: str, issue_number: int,
-                               issue_title: str, issue_body: str):
+                               issue_title: str, issue_body: str,
+                               installation_id: Optional[int] = None):
     """处理 @agent 触发"""
     logger.info("webhook.agent_trigger_processing",
                owner=owner,
@@ -448,6 +459,7 @@ async def handle_agent_trigger(owner: str, repo: str, issue_number: int,
         try:
             from core.github_api import get_github_client
             github = get_github_client()
+            github.set_installation_id(installation_id)
             
             # 直接回答，不发送"处理中"消息
             answer = """👋 你好！我是 GitHub Agent，一个智能代码助手。
@@ -481,6 +493,7 @@ async def handle_agent_trigger(owner: str, repo: str, issue_number: int,
     try:
         from core.github_api import get_github_client
         github = get_github_client()
+        github.set_installation_id(installation_id)
         
         # 发送处理中通知
         await github.create_issue_comment(
@@ -506,7 +519,8 @@ async def handle_agent_trigger(owner: str, repo: str, issue_number: int,
             priority=Priority.NORMAL.value,
             owner=owner,
             title=issue_title,
-            body=issue_body
+            body=issue_body,
+            installation_id=installation_id
         )
         
         logger.info("webhook.agent_trigger_enqueued",

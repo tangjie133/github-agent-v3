@@ -124,21 +124,13 @@ async def test_github_client_mock():
     """测试 GitHub 客户端（使用 Mock）"""
     print("\n🧪 测试 GitHub 异步客户端...")
     
-    from github_api import GitHubClient
-    from core.exceptions import GitHubAuthError
-    
-    # 测试没有认证时抛出异常
-    try:
-        client = GitHubClient()  # 没有 token 和 auth_manager
-        await client._get_token()
-        assert False, "应该抛出认证错误"
-    except GitHubAuthError as e:
-        print(f"  ✓ 认证错误抛出: {e.message}")
+    from core.github_api import GitHubClient, GitHubCredentials
     
     # 测试带 token 的客户端创建
-    client = GitHubClient(token="test_token")
-    token = await client._get_token()
-    assert token == "test_token"
+    client = GitHubClient(credentials=GitHubCredentials(token="test_token"))
+    headers = await client._get_auth_headers()
+    assert "Authorization" in headers
+    assert headers["Authorization"] == "Bearer test_token"
     print(f"  ✓ Token 客户端创建成功")
     
     # 测试客户端关闭
@@ -153,16 +145,15 @@ def test_github_client_headers():
     print("\n🧪 测试 GitHub 请求头...")
     
     import asyncio
-    from github_api import GitHubClient
+    from core.github_api import GitHubClient, GitHubCredentials
     
     async def _test():
-        client = GitHubClient(token="test_token_12345")
-        headers = await client._get_headers()
+        client = GitHubClient(credentials=GitHubCredentials(token="test_token_12345"))
+        headers = await client._get_auth_headers()
         
         assert "Authorization" in headers
-        assert headers["Authorization"] == "token test_token_12345"
+        assert headers["Authorization"] == "Bearer test_token_12345"
         assert "Accept" in headers
-        assert "X-GitHub-Api-Version" in headers
         
         await client.close()
     

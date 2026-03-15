@@ -191,12 +191,9 @@ class DebugLogger:
             elif level == "info":
                 log_msg = colorize(log_msg, "cyan")
         
-        # 输出到控制台
-        print(log_msg)
-        
-        # 同时记录到日志
+        # 记录到日志
         log_func = getattr(logger, level if level != "success" else "info")
-        log_func(log_msg)
+        log_func(log_msg.strip())
     
     def step(self, name: str, **kwargs):
         """记录步骤开始"""
@@ -274,13 +271,10 @@ class DebugLogger:
         if not debug_config.enabled:
             return
         
-        print(f"\n{'='*60}")
-        print(colorize(f"📊 处理摘要 [{self.trace_id}]", "cyan", bold=True))
-        print(f"{'='*60}")
-        print(json.dumps(data, indent=2, default=str, ensure_ascii=False))
-        print(f"{'='*60}\n")
-        
-        logger.info(f"Summary [{self.trace_id}]: {json.dumps(data, default=str)}")
+        # 记录到结构化日志
+        logger.info("debug.summary", 
+                   trace_id=self.trace_id,
+                   **{k: str(v) for k, v in data.items()})
     
     def save_context(self, context_data: Dict, filename: str = None):
         """保存上下文到文件"""
@@ -325,13 +319,17 @@ def debug_perf(name: Optional[str] = None):
             finally:
                 elapsed = (time.perf_counter() - start) * 1000
                 
-                # 创建临时 logger 输出
+                # 记录性能日志
                 if elapsed > debug_config.perf_slow_threshold_ms:
-                    print(colorize(f"🐌 SLOW: {func_name} took {elapsed:.2f}ms [{status}]", "red", bold=True))
+                    logger.warning("debug.perf.slow", 
+                                 func=func_name, 
+                                 elapsed_ms=round(elapsed, 2),
+                                 status=status)
                 elif debug_config.is_detailed():
-                    print(f"⏱️  PERF: {func_name} took {elapsed:.2f}ms [{status}]")
-                
-                logger.debug(f"PERF: {func_name}={elapsed:.2f}ms")
+                    logger.debug("debug.perf", 
+                               func=func_name, 
+                               elapsed_ms=round(elapsed, 2),
+                               status=status)
         
         return wrapper
     return decorator
@@ -390,15 +388,13 @@ def is_dry_run() -> bool:
     return debug_config.dry_run
 
 
-def print_banner():
-    """打印调试模式横幅"""
+def log_banner():
+    """记录调试模式启动"""
     if not debug_config.enabled:
         return
     
-    banner = f"""
-╔══════════════════════════════════════════════════════════════╗
-║  🔧 DEBUG MODE ENABLED                                       ║
-║  Level: {debug_config.level:<12}  Dry Run: {str(debug_config.dry_run):<5}               ║
-╚══════════════════════════════════════════════════════════════╝
-"""
-    print(colorize(banner, "yellow", bold=True))
+    logger.info("debug.mode_enabled",
+               level=debug_config.level,
+               dry_run=debug_config.dry_run,
+               log_steps=debug_config.log_steps,
+               perf_track=debug_config.perf_track)

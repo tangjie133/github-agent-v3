@@ -47,7 +47,8 @@ class GitHubAgent:
                 repo=entry.repo,
                 issue_number=entry.issue_number,
                 issue_title=entry.title,
-                issue_body=entry.body
+                issue_body=entry.body,
+                installation_id=entry.installation_id
             )
         
         return process_entry

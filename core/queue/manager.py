@@ -63,6 +63,7 @@ class QueueEntry:
     owner: str = ""
     title: str = ""
     body: str = ""
+    installation_id: Optional[int] = None
     
     def __post_init__(self):
         if not self.created_at:
@@ -192,7 +193,8 @@ class QueueManager:
                      priority: int = 0,
                      owner: str = "",
                      title: str = "",
-                     body: str = "") -> QueuePosition:
+                     body: str = "",
+                     installation_id: Optional[int] = None) -> QueuePosition:
         """
         将 Issue 加入队列
         
@@ -205,6 +207,7 @@ class QueueManager:
             owner: 仓库所有者
             title: Issue 标题
             body: Issue 内容
+            installation_id: GitHub App Installation ID
         
         Returns:
             QueuePosition: 排队位置信息
@@ -219,7 +222,8 @@ class QueueManager:
             created_at=utc_now_iso(),
             owner=owner,
             title=title,
-            body=body
+            body=body,
+            installation_id=installation_id
         )
         
         if self.is_available:
