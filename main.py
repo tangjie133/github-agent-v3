@@ -1,7 +1,7 @@
 """
 GitHub Agent V3 - 主入口
 
-启动 Webhook 服务器和 Worker 池
+启动 Webhook 服务器、Worker 池和知识库服务
 """
 
 # 首先加载 .env 文件，确保环境变量在导入其他模块前已设置
@@ -11,7 +11,9 @@ load_dotenv('.env')
 import asyncio
 import signal
 import sys
+import threading
 from typing import Optional
+from http.server import HTTPServer
 
 from core.logging import get_logger, setup_logging
 from core.config import get_config
@@ -26,7 +28,7 @@ class GitHubAgent:
     """
     GitHub Agent 主服务
     
-    整合 Webhook 服务器和 Worker 池
+    整合 Webhook 服务器、Worker 池和知识库服务
     """
     
     def __init__(self):
@@ -34,6 +36,8 @@ class GitHubAgent:
         self.worker_pool: Optional[WorkerPool] = None
         self.webhook_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
+        self._kb_server: Optional[HTTPServer] = None
+        self._kb_thread: Optional[threading.Thread] = None
     
     async def _create_processor(self):
         """创建 Issue 处理器"""
@@ -53,23 +57,88 @@ class GitHubAgent:
         
         return process_entry
     
+    def _start_kb_service(self):
+        """在后台线程启动知识库服务"""
+        try:
+            from knowledge_base.kb_service import KnowledgeBaseService, KBRequestHandler, run_server
+            
+            # 从配置获取知识库设置
+            kb_config = self.config.knowledge_base
+            if not kb_config.enabled:
+                logger.info("kb.disabled")
+                return
+            
+            # 解析 host:port
+            service_url = kb_config.service_url  # 如 "http://localhost:8000"
+            host = "0.0.0.0"
+            port = 8000
+            
+            if ":" in service_url:
+                parts = service_url.replace("http://", "").replace("https://", "").split(":")
+                if len(parts) == 2:
+                    host = parts[0]
+                    port = int(parts[1])
+            
+            # 获取嵌入模型配置
+            embedding_model = getattr(kb_config, 'embedding_model', 'nomic-embed-text')
+            embedding_host = getattr(kb_config, 'embedding_host', 'http://localhost:11434')
+            
+            logger.info("kb.starting",
+                       host=host,
+                       port=port,
+                       embedding_model=embedding_model)
+            
+            # 创建并启动知识库服务
+            kb_service = KnowledgeBaseService(
+                embedding_model=embedding_model,
+                embedding_host=embedding_host
+            )
+            
+            KBRequestHandler.kb_service = kb_service
+            
+            self._kb_server = HTTPServer((host, port), KBRequestHandler)
+            logger.info(f"知识库服务已启动 http://{host}:{port}")
+            
+            # 在后台线程运行
+            self._kb_thread = threading.Thread(
+                target=self._kb_server.serve_forever,
+                daemon=True
+            )
+            self._kb_thread.start()
+            logger.info("kb.started", host=host, port=port)
+            
+        except Exception as e:
+            logger.error("kb.failed", error=str(e))
+    
+    def _stop_kb_service(self):
+        """停止知识库服务"""
+        if self._kb_server:
+            try:
+                self._kb_server.shutdown()
+                logger.info("kb.stopped")
+            except Exception as e:
+                logger.warning("kb.stop_failed", error=str(e))
+    
     async def start(self):
         """启动所有服务"""
         logger.info("agent.starting",
                    version="3.0.0",
                    confirm_mode=self.config.processing.confirm_mode)
         
-        # 创建 Issue 处理器
+        # 1. 启动知识库服务（后台线程）
+        self._start_kb_service()
+        
+        # 2. 创建 Issue 处理器
         processor = await self._create_processor()
         
-        # 启动 Worker 池
+        # 3. 启动 Worker 池
         self.worker_pool = WorkerPool(
             num_workers=self.config.queue.workers,
             processor=processor
         )
         await self.worker_pool.start()
         
-        # 启动 Webhook 服务器
+        # 4. 启动 Webhook 服务器
         self.webhook_task = asyncio.create_task(
             start_server(
                 host=self.config.webhook.host,
@@ -79,7 +148,8 @@ class GitHubAgent:
         
         logger.info("agent.started",
                    workers=self.config.queue.workers,
-                   webhook_port=self.config.webhook.port)
+                   webhook_port=self.config.webhook.port,
+                   kb_enabled=self.config.knowledge_base.enabled)
         
         # 等待关闭信号
         await self._shutdown_event.wait()
@@ -88,6 +158,9 @@ class GitHubAgent:
         """停止所有服务"""
         logger.info("agent.stopping")
         
+        # 停止知识库服务
+        self._stop_kb_service()
+        
         # 取消 Webhook 任务（Uvicorn 服务器）
         if self.webhook_task and not self.webhook_task.done():
             self.webhook_task.cancel()
@@ -95,7 +168,7 @@ class GitHubAgent:
                 await asyncio.wait_for(self.webhook_task, timeout=6)
             except asyncio.TimeoutError:
                 logger.warning("agent.stop_timeout", component="webhook")
-            except asyncio.CancelledError:
+            except CancelledError:
                 pass
         
         # 停止 Worker 池
